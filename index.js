@@ -4,7 +4,6 @@ import dotenv from "dotenv";
 import { google } from "googleapis";
 import fs from "fs";
 
-
 dotenv.config();
 
 const userLastRequest = new Map();
@@ -45,6 +44,19 @@ function containsCouponWord(text) {
   return /\bcoupon\b/i.test(text);
 }
 
+async function getInstagramUsername(userId) {
+  try {
+    const url = `https://graph.instagram.com/v21.0/${userId}?fields=username&access_token=${PAGE_ACCESS_TOKEN}`;
+
+    const res = await axios.get(url);
+
+    return res.data?.username || `User_${userId}`;
+  } catch (err) {
+    console.error("Username fetch error:", err.response?.data || err.message);
+    return `User_${userId}`; // fallback
+  }
+}
+
 function checkRateLimit(userId) {
   const now = Date.now();
   const lastTime = userLastRequest.get(userId);
@@ -55,7 +67,7 @@ function checkRateLimit(userId) {
     if (diffMinutes < RATE_LIMIT_MINUTES) {
       return {
         allowed: false,
-        wait: Math.ceil(RATE_LIMIT_MINUTES - diffMinutes)
+        wait: Math.ceil(RATE_LIMIT_MINUTES - diffMinutes),
       };
     }
   }
@@ -194,13 +206,13 @@ async function markCouponAssigned(rowIndex, userId) {
 /* =========================
    LOG MESSAGE
 ========================= */
-async function logMessage(userId, message) {
+async function logMessage(userId, username, message) {
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
-    range: "Sheet2!A:C",
+    range: "Sheet2!A:D",
     valueInputOption: "RAW",
     requestBody: {
-      values: [[new Date().toISOString(), userId, message]],
+      values: [[new Date().toISOString(), userId, username, message]],
     },
   });
 }
@@ -208,7 +220,7 @@ async function logMessage(userId, message) {
 /* =========================
    ASSIGN COUPON
 ========================= */
-async function assignCoupon(userId, message) {
+async function assignCoupon(userId, username, message) {
   // check existing
   const existing = await checkExistingCoupon(userId);
 
@@ -224,7 +236,7 @@ async function assignCoupon(userId, message) {
   }
 
   await markCouponAssigned(coupon.rowIndex, userId);
-  await logMessage(userId, message);
+  await logMessage(userId, username, message);
 
   return { type: "new", code: coupon.code };
 }
@@ -247,15 +259,15 @@ app.post("/webhook", async (req, res) => {
 
     const userId = event.sender?.id;
     const rawText = event.message?.text;
-    
+
     if (!rawText || rawText.trim() === "") {
       return res.sendStatus(200);
     }
-    
-    const text = rawText.toLowerCase();
-    
-    console.log("Incoming:", text, "from", userId);
 
+    const text = rawText.toLowerCase();
+
+    console.log("Incoming:", text, "from", userId);
+    const username = await getInstagramUsername(userId);
     /* =========================
        FIRST TIME USER MESSAGE
     ========================= */
@@ -275,9 +287,7 @@ app.post("/webhook", async (req, res) => {
     //       "Go ahead and try it!",
     //   );
     // }
-    // await logMessage(userId, text);
 
-    
     /* =========================
        CHECK COUPON
     ========================= */
@@ -292,7 +302,7 @@ app.post("/webhook", async (req, res) => {
     /* =========================
        COUPON KEYWORDS
     ========================= */
-    const keywords = ["coupon"];
+    const keywords = ["coupon", "#freeicecream", "#frozellecreamery"];
     const wantsCoupon = keywords.some((k) => text.includes(k));
 
     if (wantsCoupon) {
@@ -306,7 +316,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      const result = await assignCoupon(userId, text);
+      const result = await assignCoupon(userId, username, text);
 
       let reply = "";
 
@@ -322,12 +332,10 @@ app.post("/webhook", async (req, res) => {
       await sendMessage(userId, reply);
       return res.sendStatus(200);
     }
-    
 
     /* =========================
        FALLBACK MESSAGE
     ========================= */
-    
 
     res.sendStatus(200);
   } catch (err) {
